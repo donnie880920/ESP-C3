@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Donnie BLE 4x5 矩陣與 EC11 設定</title>
+  <style>
+    body { font-family: 'Segoe UI', Arial, sans-serif; background: #f4f7f6; margin: 0; padding: 20px; }
+    .container { max-width: 1100px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+    h1 { text-align: center; margin-top: 0; }
+    .status-bar { display: flex; justify-content: space-between; align-items: center; background: #e9ecef; padding: 10px 15px; border-radius: 6px; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
+    .btn { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+    .btn-primary { background: #007bff; color: white; }
+    .btn-info { background: #17a2b8; color: white; }
+    .btn-success { background: #28a745; color: white; }
+    .btn-danger { background: #dc3545; color: white; }
+    .btn-secondary { background: #6c757d; color: white; }
+    .btn:disabled { background: #cccccc; cursor: not-allowed; }
+    .btn-sm { padding: 4px 8px; font-size: 12px; margin-top: 5px; }
+    
+    .profile-nav { display: flex; gap: 10px; align-items: center; overflow-x: auto; padding-bottom: 10px; margin-bottom: 20px; border-bottom: 2px solid #ddd; }
+    .profile-tab { padding: 8px 16px; border: 1px solid #28a745; background: white; color: #28a745; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+    .profile-tab.active { background: #28a745; color: white; }
+    
+    .grid-4x5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 20px; }
+    .card { border: 1px solid #ddd; padding: 12px; border-radius: 6px; background: #fafafa; font-size: 13px; }
+    .card h4 { margin: 0 0 8px 0; font-size: 14px; color: #333; border-bottom: 1px solid #eee; padding-bottom: 4px; }
+    .card.special-nav { background: #fff3cd; border-color: #ffeeba; }
+    .card.special-ec11 { background: #d1ecf1; border-color: #bee5eb; }
+
+    .checkbox-group { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 8px 0; }
+    .checkbox-group label { font-size: 12px; cursor: pointer; }
+    .key-input-list { display: flex; flex-direction: column; gap: 4px; }
+    .key-input-item { display: flex; gap: 4px; align-items: center; }
+    input[type="text"] { padding: 5px; border: 1px solid #ccc; border-radius: 4px; width: 100%; box-sizing: border-box; }
+    .name-editor { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; background: #f8f9fa; padding: 10px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h1>Donnie ESP32 4x5 矩陣與 EC11 旋轉編碼器設定</h1>
+
+  <div class="status-bar">
+    <div>狀態：<span id="connStatus" style="color:red; font-weight:bold;">未連線</span></div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <button id="connectBtn" class="btn btn-primary">1. 連線藍芽</button>
+      <button id="readBtn" class="btn btn-info" disabled style="display:none;">讀取板上方案</button>
+      <button id="exportBtn" class="btn btn-secondary">下載設定檔至電腦</button>
+      <button id="importBtn" class="btn btn-secondary" onclick="document.getElementById('importFile').click()">從電腦上傳設定檔</button>
+      <input type="file" id="importFile" style="display:none" accept=".json" onchange="importJSON(event)">
+      <button id="saveBtn" class="btn btn-success" disabled>2. 同步資料庫並儲存至ESP32</button>
+    </div>
+  </div>
+
+  <div class="profile-nav">
+    <div id="tabList" style="display:flex; gap:10px;"></div>
+    <button id="addProfileBtn" class="btn btn-primary" onclick="addProfile()">+ 新增方案 (最多4個)</button>
+  </div>
+
+  <div class="name-editor">
+    <label style="font-weight:bold;">方案自訂名稱：</label>
+    <input type="text" id="profileNameInput" style="font-size:16px; width:250px;" onchange="updateProfileName(this.value)">
+    <button class="btn btn-danger btn-sm" style="margin-left:auto;" onclick="deleteCurrentProfile()">刪除此方案</button>
+  </div>
+
+  <datalist id="keycode-options"></datalist>
+
+  <div id="matrixGrid" class="grid-4x5"></div>
+</div>
+
+<script>
+  const CONFIG_SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+  const CONFIG_CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+
+  let bluetoothDevice;
+  let configCharacteristic;
+  let activeProfileIdx = 0;
+
+  const keyMap = {
+    'A': 0x04, 'B': 0x05, 'C': 0x06, 'D': 0x07, 'E': 0x08, 'F': 0x09, 'G': 0x0A,
+    'H': 0x0B, 'I': 0x0C, 'J': 0x0D, 'K': 0x0E, 'L': 0x0F, 'M': 0x10, 'N': 0x11,
+    'O': 0x12, 'P': 0x13, 'Q': 0x14, 'R': 0x15, 'S': 0x16, 'T': 0x17, 'U': 0x18,
+    'V': 0x19, 'W': 0x1A, 'X': 0x1B, 'Y': 0x1C, 'Z': 0x1D, 
+
+    '1': 0x1E, '2': 0x1F, '3': 0x20, '4': 0x21, '5': 0x22, '6': 0x23, '7': 0x24, '8': 0x25, '9': 0x26, '0': 0x27,
+
+    'ENTER': 0x28, 'ESC': 0x29, 'BACKSPACE': 0x2A, 'TAB': 0x2B, 'SPACE': 0x2C,
+    'DELETE': 0x4C, 'INSERT': 0x49, 'HOME': 0x4A, 'END': 0x4D, 'PAGE_UP': 0x4B, 'PAGE_DOWN': 0x4E,
+
+    'UP': 0x52, 'DOWN': 0x51, 'LEFT': 0x50, 'RIGHT': 0x4F,
+    'UP_ARROW': 0x52, 'DOWN_ARROW': 0x51, 'LEFT_ARROW': 0x50, 'RIGHT_ARROW': 0x4F,
+
+    'NUM_LOCK': 0x53, 'NUM_/': 0x54, 'NUM_*': 0x55, 'NUM_-': 0x56, 'NUM_+': 0x57, 'NUM_ENTER': 0x58,
+    'NUM_1': 0x59, 'NUM_2': 0x5A, 'NUM_3': 0x5B, 'NUM_4': 0x5C, 'NUM_5': 0x5D,
+    'NUM_6': 0x5E, 'NUM_7': 0x5F, 'NUM_8': 0x60, 'NUM_9': 0x61, 'NUM_0': 0x62, 'NUM_.': 0x63,
+
+    'F1': 0x3A, 'F2': 0x3B, 'F3': 0x3C, 'F4': 0x3D, 'F5': 0x3E, 'F6': 0x3F,
+    'F7': 0x40, 'F8': 0x41, 'F9': 0x42, 'F10': 0x43, 'F11': 0x44, 'F12': 0x45
+  };
+
+  const buttonLabels = [];
+  for (let r = 0; r < 4; r++) {
+    for (let c = 0; c < 5; c++) {
+      let label = `ROW${r} COL${c}`;
+      if (r === 2 && c === 4) label += " (EC11 按下)";
+      if (r === 3 && c === 0) label += " (五向: 上/上一方案)";
+      if (r === 3 && c === 1) label += " (五向: 下/下一方案)";
+      if (r === 3 && c === 2) label += " (五向: 左)";
+      if (r === 3 && c === 3) label += " (五向: 右)";
+      if (r === 3 && c === 4) label += " (五向: 中)";
+      buttonLabels.push(label);
+    }
+  }
+  buttonLabels.push("EC11 順時針旋轉 (CW)");
+  buttonLabels.push("EC11 逆時針旋轉 (CCW)");
+
+  let profiles = [
+    {
+      name: "標準矩陣方案",
+      buttons: Array(22).fill(0).map(() => ({ mod: 0, keys: [] }))
+    }
+  ];
+
+  function initDatalist() {
+    const datalist = document.getElementById("keycode-options");
+    datalist.innerHTML = "";
+    for (let keyName in keyMap) {
+      const option = document.createElement("option");
+      option.value = keyName;
+      datalist.appendChild(option);
+    }
+  }
+
+  function renderTabs() {
+    const tabList = document.getElementById("tabList");
+    tabList.innerHTML = "";
+    profiles.forEach((p, idx) => {
+      const btn = document.createElement("button");
+      btn.className = `profile-tab ${idx === activeProfileIdx ? 'active' : ''}`;
+      btn.innerText = p.name;
+      btn.onclick = () => { activeProfileIdx = idx; renderMatrixGrid(); renderTabs(); };
+      tabList.appendChild(btn);
+    });
+
+    // 限制最多 4 個方案：如果達到 4 個，就把新增按鈕禁用並改提示字樣
+    const addBtn = document.getElementById("addProfileBtn");
+    if (profiles.length >= 4) {
+      addBtn.disabled = true;
+      addBtn.innerText = "已達上限 (最多4個方案)";
+    } else {
+      addBtn.disabled = false;
+      addBtn.innerText = "+ 新增方案";
+    }
+  }
+
+  function renderMatrixGrid() {
+    document.getElementById("profileNameInput").value = profiles[activeProfileIdx].name;
+    const grid = document.getElementById("matrixGrid");
+    grid.innerHTML = "";
+
+    const prof = profiles[activeProfileIdx];
+
+    prof.buttons.forEach((btn, bIdx) => {
+      const isProfileSwitch = (bIdx === 15 || bIdx === 16); 
+      const isEc11Press = (bIdx === 14); 
+      const isEc11Rotate = (bIdx === 20 || bIdx === 21);
+
+      const card = document.createElement("div");
+      card.className = `card ${isProfileSwitch ? 'special-nav' : (isEc11Press || isEc11Rotate ? 'special-ec11' : '')}`;
+
+      let cardHeader = `<h4>${buttonLabels[bIdx]}</h4>`;
+
+      if (bIdx === 15) {
+        card.innerHTML = cardHeader + `<p style="color:#856404; font-size:12px; margin:5px 0;">（專用：切換上一方案）</p>`;
+      } else if (bIdx === 16) {
+        card.innerHTML = cardHeader + `<p style="color:#856404; font-size:12px; margin:5px 0;">（專用：切換下一方案）</p>`;
+      } else {
+        const ctrlChecked = (btn.mod & 1) ? "checked" : "";
+        const shiftChecked = (btn.mod & 2) ? "checked" : "";
+        const altChecked = (btn.mod & 4) ? "checked" : "";
+        const guiChecked = (btn.mod & 8) ? "checked" : "";
+
+        let keysHTML = "";
+        btn.keys.forEach((k, kIdx) => {
+          keysHTML += `
+            <div class="key-input-item">
+              <input type="text" 
+                     list="keycode-options" 
+                     value="${k}" 
+                     placeholder="按鍵代號" 
+                     onchange="updateKeyVal(${bIdx}, ${kIdx}, this.value)">
+              <button class="btn btn-danger btn-sm" onclick="removeKeyInput(${bIdx}, ${kIdx})">X</button>
+            </div>
+          `;
+        });
+
+        card.innerHTML = `
+          ${cardHeader}
+          <label style="font-size:11px; font-weight:bold;">修飾鍵：</label>
+          <div class="checkbox-group">
+            <label><input type="checkbox" ${ctrlChecked} onchange="updateMod(${bIdx}, 1, this.checked)"> Ctrl</label>
+            <label><input type="checkbox" ${shiftChecked} onchange="updateMod(${bIdx}, 2, this.checked)"> Shift</label>
+            <label><input type="checkbox" ${altChecked} onchange="updateMod(${bIdx}, 4, this.checked)"> Alt</label>
+            <label><input type="checkbox" ${guiChecked} onchange="updateMod(${bIdx}, 8, this.checked)"> Win</label>
+          </div>
+          <label style="font-size:11px; font-weight:bold;">普通鍵：</label>
+          <div class="key-input-list">${keysHTML}</div>
+          <button class="btn btn-primary btn-sm" style="width:100%; margin-top:4px;" onclick="addKeyInput(${bIdx})">+ 新增按鍵</button>
+        `;
+      }
+      grid.appendChild(card);
+    });
+  }
+
+  function updateProfileName(newName) {
+    profiles[activeProfileIdx].name = newName.trim() || `方案 ${activeProfileIdx + 1}`;
+    renderTabs();
+  }
+
+  function updateMod(btnIdx, mask, checked) {
+    if (checked) {
+      profiles[activeProfileIdx].buttons[btnIdx].mod |= mask;
+    } else {
+      profiles[activeProfileIdx].buttons[btnIdx].mod &= ~mask;
+    }
+  }
+
+  function updateKeyVal(btnIdx, keyIdx, val) {
+    profiles[activeProfileIdx].buttons[btnIdx].keys[keyIdx] = val.trim().toUpperCase();
+  }
+
+  function addKeyInput(btnIdx) {
+    profiles[activeProfileIdx].buttons[btnIdx].keys.push("");
+    renderMatrixGrid();
+  }
+
+  function removeKeyInput(btnIdx, keyIdx) {
+    profiles[activeProfileIdx].buttons[btnIdx].keys.splice(keyIdx, 1);
+    renderMatrixGrid();
+  }
+
+  function addProfile() {
+    if (profiles.length >= 4) {
+      alert("最多只能建立 4 個方案！");
+      return;
+    }
+    const newIdx = profiles.length + 1;
+    profiles.push({
+      name: `新方案 ${newIdx}`,
+      buttons: Array(22).fill(0).map(() => ({ mod: 0, keys: [] }))
+    });
+    activeProfileIdx = profiles.length - 1;
+    renderTabs();
+    renderMatrixGrid();
+  }
+
+  function deleteCurrentProfile() {
+    if (profiles.length <= 1) {
+      alert("至少需要保留一個方案！");
+      return;
+    }
+    profiles.splice(activeProfileIdx, 1);
+    activeProfileIdx = 0;
+    renderTabs();
+    renderMatrixGrid();
+  }
+
+  function parseKeyHex(str) {
+    str = String(str).trim().toUpperCase();
+    if (keyMap[str]) return keyMap[str];
+    if (str.startsWith("0X")) return parseInt(str, 16);
+    return parseInt(str, 16) || 0;
+  }
+
+  function hexToKeyStr(hex) {
+    for (let key in keyMap) {
+      if (keyMap[key] === hex) return key;
+    }
+    return "0x" + hex.toString(16).padStart(2, '0').toUpperCase();
+  }
+
+  document.getElementById("connectBtn").addEventListener("click", async () => {
+    try {
+      bluetoothDevice = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: [
+          CONFIG_SERVICE_UUID,
+          '00001812-0000-1000-8000-00805f9b34fb'
+        ]
+      });
+
+      bluetoothDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+      const server = await bluetoothDevice.gatt.connect();
+      const service = await server.getPrimaryService(CONFIG_SERVICE_UUID);
+      configCharacteristic = await service.getCharacteristic(CONFIG_CHARACTERISTIC_UUID);
+
+      document.getElementById("connStatus").innerText = "已連線 (" + bluetoothDevice.name + ")";
+      document.getElementById("connStatus").style.color = "green";
+      document.getElementById("saveBtn").disabled = false;
+    } catch (e) {
+      alert("連線失敗：" + e);
+    }
+  });
+
+  // 下載設定檔至電腦
+  document.getElementById("exportBtn").addEventListener("click", () => {
+    const payload = profiles.map(p => ({
+      name: p.name,
+      buttons: p.buttons.map(b => ({
+        mod: b.mod,
+        keys: b.keys.map(k => parseKeyHex(k)).filter(k => k > 0)
+      }))
+    }));
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'donnie_keypad_config.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  // 從電腦上傳/讀取設定檔
+  function importJSON(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        let readProfiles = JSON.parse(e.target.result);
+        
+        // 限制讀取進來的方案最多只能取前 4 個
+        if (readProfiles.length > 4) {
+          alert("上傳的檔案包含超過 4 個方案，系統已自動截斷保留前 4 個方案！");
+          readProfiles = readProfiles.slice(0, 4);
+        }
+
+        profiles = readProfiles.map(p => ({
+          name: p.name || "未命名方案",
+          buttons: (p.buttons || []).map(b => ({
+            mod: b.mod || 0,
+            keys: (b.keys || []).map(k => hexToKeyStr(k))
+          }))
+        }));
+
+        profiles.forEach(p => {
+          while (p.buttons.length < 22) {
+            p.buttons.push({ mod: 0, keys: [] });
+          }
+        });
+
+        activeProfileIdx = 0;
+        renderTabs();
+        renderMatrixGrid();
+        alert("成功從電腦載入設定檔！");
+      } catch (err) {
+        alert("解析 JSON 失敗：" + err);
+      }
+    };
+    reader.readAsText(file);
+    event.target.value = ''; // 清空以便重複選取同一檔案
+  }
+
+  document.getElementById("saveBtn").addEventListener("click", async () => {
+    if (!configCharacteristic) return;
+
+    try {
+      const payload = profiles.map(p => ({
+        name: p.name,
+        buttons: p.buttons.map(b => ({
+          type: 0,
+          mod: b.mod,
+          text: "",
+          keys: b.keys.map(k => parseKeyHex(k)).filter(k => k > 0)
+        }))
+      }));
+
+      const jsonStr = JSON.stringify(payload);
+      const encoder = new TextEncoder();
+      const data = encoder.encode(jsonStr);
+
+      const chunkSize = 100;
+      for (let i = 0; i < data.length; i += chunkSize) {
+        const chunk = data.slice(i, i + chunkSize);
+        await configCharacteristic.writeValue(chunk);
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      await configCharacteristic.writeValue(encoder.encode("END"));
+
+      alert("設定已儲存！ESP32 即將自動重啟。");
+    } catch (e) {
+      alert("儲存失敗：" + e);
+    }
+  });
+
+  function onDisconnected() {
+    document.getElementById("connStatus").innerText = "未連線";
+    document.getElementById("connStatus").style.color = "red";
+    document.getElementById("saveBtn").disabled = true;
+    configCharacteristic = null;
+  }
+
+  initDatalist();
+  renderTabs();
+  renderMatrixGrid();
+</script>
+
+</body>
+</html>
