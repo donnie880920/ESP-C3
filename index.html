@@ -25,7 +25,6 @@
     .grid-4x5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 20px; }
     .card { border: 1px solid #ddd; padding: 12px; border-radius: 6px; background: #fafafa; font-size: 13px; }
     .card h4 { margin: 0 0 8px 0; font-size: 14px; color: #333; border-bottom: 1px solid #eee; padding-bottom: 4px; }
-    .card.special-nav { background: #fff3cd; border-color: #ffeeba; }
     .card.special-ec11 { background: #d1ecf1; border-color: #bee5eb; }
 
     .checkbox-group { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 8px 0; }
@@ -104,11 +103,14 @@
     for (let c = 0; c < 5; c++) {
       let label = `ROW${r} COL${c}`;
       if (r === 2 && c === 4) label += " (EC11 按下)";
-      if (r === 3 && c === 0) label += " (五向: 上/上一方案)";
-      if (r === 3 && c === 1) label += " (五向: 下/下一方案)";
-      if (r === 3 && c === 2) label += " (五向: 左)";
-      if (r === 3 && c === 3) label += " (五向: 右)";
-      if (r === 3 && c === 4) label += " (五向: 中)";
+      
+      // 重新對應與排序五向開關標籤 (COL2:左, COL1:中, COL4:右)
+      if (r === 3 && c === 0) label = "ROW3 COL0 (五向: 上 - 隱藏)"; // 內部保留，不直接顯示操作卡片
+      if (r === 3 && c === 1) label = "ROW3 COL1 (五向: 中)";
+      if (r === 3 && c === 2) label = "ROW3 COL2 (五向: 左)";
+      if (r === 3 && c === 3) label = "ROW3 COL3 (五向: 下 - 隱藏)"; // 內部保留，不直接顯示操作卡片
+      if (r === 3 && c === 4) label = "ROW3 COL4 (五向: 右)";
+      
       buttonLabels.push(label);
     }
   }
@@ -143,7 +145,6 @@
       tabList.appendChild(btn);
     });
 
-    // 限制最多 4 個方案：如果達到 4 個，就把新增按鈕禁用並改提示字樣
     const addBtn = document.getElementById("addProfileBtn");
     if (profiles.length >= 4) {
       addBtn.disabled = true;
@@ -161,54 +162,70 @@
 
     const prof = profiles[activeProfileIdx];
 
-    prof.buttons.forEach((btn, bIdx) => {
-      const isProfileSwitch = (bIdx === 15 || bIdx === 16); 
+    // 依據你的需求自訂渲染順序：
+    // 1. 先渲染 ROW0~ROW2 的按鍵 (索引 0 ~ 14，扣除中間不需要特別排序的)
+    // 2. 針對 ROW3 重新排序顯示順序為：左(COL2)、中(COL1)、右(COL4)
+    // 3. 渲染 EC11 旋轉 (索引 20, 21)
+    
+    // 定義畫面上要顯示的按鍵索引陣列順序
+    let displayIndices = [];
+    
+    // ROW 0, 1, 2 全部依序加入 (0 到 14)
+    for (let i = 0; i <= 14; i++) {
+      displayIndices.push(i);
+    }
+
+    // ROW 3 依照「左、中、右」排序 (COL2 -> INDEX 17, COL1 -> INDEX 16, COL4 -> INDEX 19)
+    displayIndices.push(17); // ROW3 COL2 (左)
+    displayIndices.push(16); // ROW3 COL1 (中)
+    displayIndices.push(19); // ROW3 COL4 (右)
+
+    // EC11 轉動
+    displayIndices.push(20);
+    displayIndices.push(21);
+
+    displayIndices.forEach((bIdx) => {
+      const btn = prof.buttons[bIdx];
       const isEc11Press = (bIdx === 14); 
       const isEc11Rotate = (bIdx === 20 || bIdx === 21);
 
       const card = document.createElement("div");
-      card.className = `card ${isProfileSwitch ? 'special-nav' : (isEc11Press || isEc11Rotate ? 'special-ec11' : '')}`;
+      card.className = `card ${isEc11Press || isEc11Rotate ? 'special-ec11' : ''}`;
 
       let cardHeader = `<h4>${buttonLabels[bIdx]}</h4>`;
 
-      if (bIdx === 15) {
-        card.innerHTML = cardHeader + `<p style="color:#856404; font-size:12px; margin:5px 0;">（專用：切換上一方案）</p>`;
-      } else if (bIdx === 16) {
-        card.innerHTML = cardHeader + `<p style="color:#856404; font-size:12px; margin:5px 0;">（專用：切換下一方案）</p>`;
-      } else {
-        const ctrlChecked = (btn.mod & 1) ? "checked" : "";
-        const shiftChecked = (btn.mod & 2) ? "checked" : "";
-        const altChecked = (btn.mod & 4) ? "checked" : "";
-        const guiChecked = (btn.mod & 8) ? "checked" : "";
+      const ctrlChecked = (btn.mod & 1) ? "checked" : "";
+      const shiftChecked = (btn.mod & 2) ? "checked" : "";
+      const altChecked = (btn.mod & 4) ? "checked" : "";
+      const guiChecked = (btn.mod & 8) ? "checked" : "";
 
-        let keysHTML = "";
-        btn.keys.forEach((k, kIdx) => {
-          keysHTML += `
-            <div class="key-input-item">
-              <input type="text" 
-                     list="keycode-options" 
-                     value="${k}" 
-                     placeholder="按鍵代號" 
-                     onchange="updateKeyVal(${bIdx}, ${kIdx}, this.value)">
-              <button class="btn btn-danger btn-sm" onclick="removeKeyInput(${bIdx}, ${kIdx})">X</button>
-            </div>
-          `;
-        });
-
-        card.innerHTML = `
-          ${cardHeader}
-          <label style="font-size:11px; font-weight:bold;">修飾鍵：</label>
-          <div class="checkbox-group">
-            <label><input type="checkbox" ${ctrlChecked} onchange="updateMod(${bIdx}, 1, this.checked)"> Ctrl</label>
-            <label><input type="checkbox" ${shiftChecked} onchange="updateMod(${bIdx}, 2, this.checked)"> Shift</label>
-            <label><input type="checkbox" ${altChecked} onchange="updateMod(${bIdx}, 4, this.checked)"> Alt</label>
-            <label><input type="checkbox" ${guiChecked} onchange="updateMod(${bIdx}, 8, this.checked)"> Win</label>
+      let keysHTML = "";
+      btn.keys.forEach((k, kIdx) => {
+        keysHTML += `
+          <div class="key-input-item">
+            <input type="text" 
+                   list="keycode-options" 
+                   value="${k}" 
+                   placeholder="按鍵代號" 
+                   onchange="updateKeyVal(${bIdx}, ${kIdx}, this.value)">
+            <button class="btn btn-danger btn-sm" onclick="removeKeyInput(${bIdx}, ${kIdx})">X</button>
           </div>
-          <label style="font-size:11px; font-weight:bold;">普通鍵：</label>
-          <div class="key-input-list">${keysHTML}</div>
-          <button class="btn btn-primary btn-sm" style="width:100%; margin-top:4px;" onclick="addKeyInput(${bIdx})">+ 新增按鍵</button>
         `;
-      }
+      });
+
+      card.innerHTML = `
+        ${cardHeader}
+        <label style="font-size:11px; font-weight:bold;">修飾鍵：</label>
+        <div class="checkbox-group">
+          <label><input type="checkbox" ${ctrlChecked} onchange="updateMod(${bIdx}, 1, this.checked)"> Ctrl</label>
+          <label><input type="checkbox" ${shiftChecked} onchange="updateMod(${bIdx}, 2, this.checked)"> Shift</label>
+          <label><input type="checkbox" ${altChecked} onchange="updateMod(${bIdx}, 4, this.checked)"> Alt</label>
+          <label><input type="checkbox" ${guiChecked} onchange="updateMod(${bIdx}, 8, this.checked)"> Win</label>
+        </div>
+        <label style="font-size:11px; font-weight:bold;">普通鍵：</label>
+        <div class="key-input-list">${keysHTML}</div>
+        <button class="btn btn-primary btn-sm" style="width:100%; margin-top:4px;" onclick="addKeyInput(${bIdx})">+ 新增按鍵</button>
+      `;
       grid.appendChild(card);
     });
   }
@@ -304,7 +321,6 @@
     }
   });
 
-  // 下載設定檔至電腦
   document.getElementById("exportBtn").addEventListener("click", () => {
     const payload = profiles.map(p => ({
       name: p.name,
@@ -323,7 +339,6 @@
     URL.revokeObjectURL(url);
   });
 
-  // 從電腦上傳/讀取設定檔
   function importJSON(event) {
     const file = event.target.files[0];
     if (!file) return;
@@ -333,7 +348,6 @@
       try {
         let readProfiles = JSON.parse(e.target.result);
         
-        // 限制讀取進來的方案最多只能取前 4 個
         if (readProfiles.length > 4) {
           alert("上傳的檔案包含超過 4 個方案，系統已自動截斷保留前 4 個方案！");
           readProfiles = readProfiles.slice(0, 4);
@@ -362,7 +376,7 @@
       }
     };
     reader.readAsText(file);
-    event.target.value = ''; // 清空以便重複選取同一檔案
+    event.target.value = '';
   }
 
   document.getElementById("saveBtn").addEventListener("click", async () => {
